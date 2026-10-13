@@ -148,6 +148,9 @@ export type InlineMacroInvocation = {
 };
 
 // @beta
+export function isContentDuplicated(collaboration: Collaboration): boolean;
+
+// @beta
 export type LinkEditionData = {
     title: string;
     url: string;

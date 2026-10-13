@@ -92,6 +92,7 @@ export class XWikiCollaborationManager extends AbstractCollaborationManager {
     collaborator.id = `${provider.doc.clientID}`;
     const collaboration: Collaboration = {
       connectionStatus: ref(ConnectionStatus.Connecting),
+      synced: ref(false),
       collaborators: ref([]),
       collaborator,
       provider,
@@ -99,7 +100,8 @@ export class XWikiCollaborationManager extends AbstractCollaborationManager {
     };
     this.watchAwarenessChange(collaboration);
     this.watchConnectionStatus(collaboration);
-    await this.sync(collaboration);
+    this.watchSyncStatus(collaboration);
+    await this.waitForFirstConnectionAttempt(collaboration);
     return collaboration;
   }
 
@@ -140,13 +142,48 @@ export class XWikiCollaborationManager extends AbstractCollaborationManager {
     });
   }
 
-  private sync(collaboration: Collaboration): Promise<void> {
+  private watchSyncStatus(collaboration: Collaboration): void {
+    const provider: WebsocketProvider = collaboration.provider;
+    provider.on("sync", (synced: boolean) => {
+      console.debug("Collaboration synchronized:", synced);
+      collaboration.synced.value = synced;
+    });
+  }
+
+  /**
+   * Joining a session has to wait for the first connection attempt to settle, so that the editor is created either
+   * with the content the session already holds or, when the server can't be reached, with the content of the saved
+   * document. It must not wait for more than that: the session is usable offline, and the provider reconnects on its
+   * own, so a server that is down delays the editor instead of preventing it.
+   *
+   * @param collaboration - the collaboration session being joined
+   * @returns a promise resolved as soon as the first connection attempt either synchronizes or fails
+   */
+  private waitForFirstConnectionAttempt(
+    collaboration: Collaboration,
+  ): Promise<void> {
     return new Promise((resolve) => {
       const provider: WebsocketProvider = collaboration.provider;
-      provider.once("sync", () => {
-        console.debug("Collaboration synchronized.");
+      const onSync = () => {
+        stopListening();
         resolve();
-      });
+      };
+      const onConnectionClose = () => {
+        console.warn(
+          "Failed to connect to the collaboration server. Editing offline until the connection is restored.",
+        );
+        stopListening();
+        resolve();
+      };
+      // Stop listening as soon as the first attempt settles: the disconnections that follow are transient and the
+      // provider recovers from them on its own. We can't use once() here, it registers a wrapper that off() doesn't
+      // remove.
+      function stopListening() {
+        provider.off("sync", onSync);
+        provider.off("connection-close", onConnectionClose);
+      }
+      provider.on("sync", onSync);
+      provider.on("connection-close", onConnectionClose);
     });
   }
 

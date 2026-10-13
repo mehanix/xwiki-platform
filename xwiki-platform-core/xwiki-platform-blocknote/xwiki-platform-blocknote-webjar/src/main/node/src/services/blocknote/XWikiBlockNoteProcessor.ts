@@ -20,7 +20,6 @@
 import { BlockNoteDocument } from "./BlockNoteProcessor";
 import { extractLinkId, injectLinkId, stripLinkId } from "./linkId";
 import { Container, inject, injectable } from "inversify";
-import { uuidv4 } from "lib0/random";
 import type { BlockNoteIterator, NodeType } from "./BlockNoteIterator";
 import type { BlockNoteProcessor } from "./BlockNoteProcessor";
 
@@ -83,15 +82,53 @@ export class XWikiBlockNoteProcessor implements BlockNoteProcessor {
   public load(blockNoteJSON: string): BlockNoteDocument {
     const blockNoteContent = blockNoteJSON ? JSON.parse(blockNoteJSON) : [];
     const blockNoteDocument = new BlockNoteDocument(blockNoteContent);
+    // The identifiers we generate here are derived from the position in the document rather than drawn at random, so
+    // that two clients loading the same document generate the same ones. Two things need this: the metadata we back up
+    // is mapped to them but is local to each client, so a client whose editor content comes from a realtime session
+    // wouldn't find its own metadata under the identifiers of whoever loaded the content first; and a realtime session
+    // is seeded with content that has to be identical across clients for their seeds to merge into one.
+    const nextId = XWikiBlockNoteProcessor.createIdGenerator();
+    // Every block gets one, not just the blocks carrying metadata: BlockNote generates a random identifier for the
+    // blocks that don't have one, which would make the seed differ from one client to the other.
+    this.assignBlockIds(blockNoteContent, nextId);
     this.iterator.iterate(blockNoteContent, {
-      visit: (node) => this.loadNode(node, blockNoteDocument),
+      visit: (node) => this.loadNode(node, blockNoteDocument, nextId),
     });
     return blockNoteDocument;
+  }
+
+  /**
+   * @returns a generator of identifiers that are unique within a document and stable across clients loading it
+   */
+  private static createIdGenerator(): () => string {
+    let count = 0;
+    // The prefix keeps these apart from the identifiers BlockNote generates while the document is being edited.
+    return () => `xwiki-${count++}`;
+  }
+
+  /**
+   * Gives an identifier to every block that doesn't have one, depth first, so that the identifiers only depend on the
+   * position of the blocks in the document.
+   *
+   * @param blocks - the blocks to assign identifiers to
+   * @param nextId - the identifier generator
+   */
+  private assignBlockIds(blocks: unknown[], nextId: () => string): void {
+    for (const block of blocks as Record<string, unknown>[]) {
+      if (block === null || typeof block !== "object") {
+        continue;
+      }
+      block.id = block.id ?? nextId();
+      if (Array.isArray(block.children)) {
+        this.assignBlockIds(block.children, nextId);
+      }
+    }
   }
 
   private loadNode(
     node: NodeType,
     blockNoteDocument: BlockNoteDocument,
+    nextId: () => string,
   ): boolean {
     if (typeof node === "object") {
       if (this.isMacroNode(node)) {
@@ -99,7 +136,7 @@ export class XWikiBlockNoteProcessor implements BlockNoteProcessor {
         return true;
       } else if (node.type === "link") {
         this.normalizeLinkContent(node);
-        this.backupLinkMetadata(node, blockNoteDocument);
+        this.backupLinkMetadata(node, blockNoteDocument, nextId);
       } else if (
         "props" in node &&
         node.props !== null &&
@@ -165,7 +202,6 @@ export class XWikiBlockNoteProcessor implements BlockNoteProcessor {
     XWikiBlockNoteProcessor.KNOWN_METADATA.filter(
       (key) => key in props,
     ).forEach((key) => {
-      block.id = block.id ?? uuidv4();
       blockNoteDocument.getMetadata(block.id as string, true)![key] =
         props[key];
       delete props[key];
@@ -185,6 +221,7 @@ export class XWikiBlockNoteProcessor implements BlockNoteProcessor {
   private backupLinkMetadata(
     link: Record<string, unknown>,
     blockNoteDocument: BlockNoteDocument,
+    nextId: () => string,
   ): void {
     const props = (link.props ?? {}) as Record<string, unknown>;
     const metadata: Record<string, unknown> = {};
@@ -194,7 +231,7 @@ export class XWikiBlockNoteProcessor implements BlockNoteProcessor {
       metadata[key] = props[key];
     });
     if (Object.keys(metadata).length > 0) {
-      const id = uuidv4();
+      const id = nextId();
       Object.assign(blockNoteDocument.getMetadata(id, true)!, metadata);
       link.href = injectLinkId(link.href as string, id);
     }

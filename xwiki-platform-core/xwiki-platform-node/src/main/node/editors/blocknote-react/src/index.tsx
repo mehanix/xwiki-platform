@@ -73,6 +73,8 @@ export type {
 
 export type { DefaultBlockNoteEditorOptions } from "./components/BlockNoteViewWrapper";
 
+export { isContentDuplicated } from "./blocknote/collaborationSeed";
+
 export type {
   ImageEditionOverrideFn,
   ImageUpdateResult,

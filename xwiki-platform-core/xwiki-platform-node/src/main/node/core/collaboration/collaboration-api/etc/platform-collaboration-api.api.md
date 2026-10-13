@@ -45,6 +45,7 @@ export abstract class AbstractCollaborationManager implements CollaborationManag
 // @beta
 export type Collaboration = {
     connectionStatus: Ref<ConnectionStatus>;
+    synced: Ref<boolean>;
     collaborators: Ref<Collaborator[]>;
     collaborator: Collaborator;
     provider: any;

@@ -28,10 +28,11 @@ import {
   querySuggestionsMenuItems,
 } from "../blocknote";
 import "@blocknote/core/fonts/inter.css";
+import { seedSharedDocument } from "../blocknote/collaborationSeed";
 import { adaptMacroForBlockNote } from "../blocknote/utils";
 import { DepsContainerContext, MacrosContext } from "../contexts";
 import { syntaxHighlighter } from "@blocknote/code-block";
-import { blocksToYXmlFragment, withCollaboration } from "@blocknote/core/yjs";
+import { withCollaboration } from "@blocknote/core/yjs";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
 import {
@@ -346,24 +347,11 @@ const BlockNoteViewWrapper: React.FC<BlockNoteViewWrapperProps> = ({
     setEditor?.(editor);
   }, [setEditor, editor]);
 
-  // When realtime collaboration is enabled, the first user joining the session must set the initial content. The rest
-  // of the participants will retrieve the editor content from the realtime server. We know who is the first user
-  // joining the session by checking for the absence of an initialContentLoaded key in the document's configuration map
-  // (shared across all session participants).
+  // When realtime collaboration is enabled the editor takes its content from the shared document, so the content of
+  // the saved document has to be loaded into it. Participants that are already in the session have it, the ones that
+  // aren't seed it themselves, and seeding is convergent so that those two cases can happen at the same time.
   if (collaboration) {
-    const config = collaboration.doc.getMap("configuration");
-    const initialContentLoaded = config.get("initialContentLoaded");
-    if (!initialContentLoaded) {
-      // This is the first user joining the realtime collaboration session.
-      config.set("initialContentLoaded", true);
-      console.debug(
-        "Setting initial content for realtime collaboration session.",
-        content,
-      );
-      // Initialize the realtime collaboration session with the provided content.
-      const fragment = collaboration.doc.getXmlFragment(name);
-      blocksToYXmlFragment(editor, content, fragment);
-    }
+    seedSharedDocument(editor, collaboration, name, content);
   }
 
   // Renders the editor instance using a React component.

@@ -60,18 +60,31 @@ export abstract class AbstractCollaborationManager
           "no document reference provided and the current document reference is undefined.",
       );
     }
-    const key = this.modelReferenceSerializer.serialize(documentReference);
-    let collaboration = this.collaborations.get(key!);
+    const key = this.modelReferenceSerializer.serialize(documentReference)!;
+    const collaboration = this.collaborations.get(key);
     if (collaboration) {
       collaboration.usageCount++;
-    } else {
-      collaboration = {
-        promise: this.connect(documentReference),
-        usageCount: 1,
-      };
-      this.collaborations.set(key!, collaboration);
+      return collaboration.promise;
     }
-    return collaboration.promise;
+    return this.startCollaboration(key, documentReference);
+  }
+
+  /**
+   * Start a new collaboration session and cache it, so that the next join() for the same document reuses it.
+   *
+   * @param key - the serialized reference of the document to collaborate on
+   * @param documentReference - the reference of the document to collaborate on
+   * @returns the new collaboration session
+   */
+  private startCollaboration(
+    key: string,
+    documentReference: DocumentReference,
+  ): Promise<Collaboration> {
+    const promise = this.connect(documentReference);
+    this.collaborations.set(key, { promise, usageCount: 1 });
+    // The session was never joined, so leave() has nothing to disconnect and the next join() has to start over.
+    promise.catch(() => this.collaborations.delete(key));
+    return promise;
   }
 
   leave(documentReference?: DocumentReference): void {

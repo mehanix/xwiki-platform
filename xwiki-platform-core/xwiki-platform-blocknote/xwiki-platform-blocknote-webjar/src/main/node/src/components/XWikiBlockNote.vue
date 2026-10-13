@@ -19,6 +19,13 @@
 -->
 <template>
   <div class="xwiki-blocknote" v-if="!isLoading">
+    <div
+      v-if="isCollaborationOffline"
+      class="xwiki-blocknote-offline"
+      role="status"
+    >
+      {{ offlineMessage }}
+    </div>
     <suspense>
       <BlocknoteEditor
         v-if="editorContent"
@@ -88,12 +95,14 @@ import {
 import { collaborationManagerProviderName } from "@xwiki/platform-collaboration-api";
 import { XWikiDocument } from "@xwiki/platform-document-xwiki";
 import { BlocknoteEditor } from "@xwiki/platform-editors-blocknote-headless";
+import { isContentDuplicated } from "@xwiki/platform-editors-blocknote-react";
 import { MINIMAL_SYNTAX_NAME } from "@xwiki/platform-minimal-syntax-config";
 import { SYNTAX_CONFIG_COMPONENT_GROUP_NAME } from "@xwiki/platform-syntaxes-config";
 import { EntityType, Model } from "@xwiki/platform-xwiki-model-api";
 import { Container } from "inversify";
 import { uuidv4 } from "lib0/random";
 import {
+  computed,
   inject,
   onBeforeMount,
   onUnmounted,
@@ -342,6 +351,19 @@ const collaboration: Ref<Collaboration | undefined> = ref(undefined);
 let collaborationManager: CollaborationManager | undefined = undefined;
 const collaborationKey: Ref<string | undefined> = ref();
 
+// Mirrors the sync state of the joined session. It's kept apart from the session itself because putting the session in
+// a ref makes Vue unwrap the refs it holds, which is exactly what we would be reading here.
+const collaborationSynced: Ref<boolean | undefined> = ref(undefined);
+
+// We're editing in a session we can't reach. Not being synchronized is what we show, rather than not being connected:
+// the provider keeps retrying, so the connection status alternates while the server is down, while this stays put
+// until our changes are actually shared.
+const isCollaborationOffline = computed(
+  () => collaborationSynced.value === false,
+);
+
+const offlineMessage = ref("");
+
 // Resolved before the collaboration session is joined, so that creating the auto-saver doesn't have to wait for it.
 let autoSaveVersionSummary: string | undefined;
 
@@ -351,13 +373,30 @@ onBeforeMount(async () => {
 
   editorProps.value.label = await translate("editor.label", defaultLabel);
   autoSaveVersionSummary = await translate("autoSaveSummary");
+  offlineMessage.value = await translate("collaboration.offline");
 
-  if (collaborationURL && docRef) {
-    await joinCollaborationSession(collaborationURL, docRef);
-  }
+  await maybeJoinCollaborationSession();
 
   isLoading.value = false;
 });
+
+/**
+ * Joins the realtime collaboration session of the edited document, when there is one to join. Realtime collaboration
+ * is a bonus, so failing to join must not stop the editor from loading. Note that an unreachable server doesn't fail
+ * here: it gives us a session that synchronizes as soon as it can be reached.
+ */
+async function maybeJoinCollaborationSession(): Promise<void> {
+  if (!collaborationURL || !docRef) {
+    return;
+  }
+
+  try {
+    await joinCollaborationSession(collaborationURL, docRef);
+  } catch (error) {
+    console.error("Failed to join the realtime collaboration session.", error);
+    collaborationSynced.value = false;
+  }
+}
 
 /**
  * Join the realtime collaboration session for the edited XWiki document.
@@ -375,8 +414,40 @@ async function joinCollaborationSession(
   collaborationManager = container
     .get<CollaborationManagerProvider>(collaborationManagerProviderName)
     .get();
-  collaboration.value = await collaborationManager.join(reference);
+  const session = await collaborationManager.join(reference);
+  collaboration.value = session;
   collaborationKey.value = `${encodeURIComponent(documentReference)}/${encodeURIComponent(actualLocale)}`;
+  watchCollaborationSync(session);
+}
+
+/**
+ * Follows the synchronization state of the joined session, to tell the user when what they type isn't shared yet and
+ * when the session turned out to hold the content of the page twice.
+ *
+ * @param session - the collaboration session that was joined
+ */
+function watchCollaborationSync(session: Collaboration): void {
+  let contentDuplicationReported = false;
+  watch(
+    session.synced,
+    async (synced) => {
+      collaborationSynced.value = synced;
+      // The session can only be found to hold the content twice once we've synchronized with it, and it stays that
+      // way afterwards, so there's nothing to report more than once.
+      if (
+        synced &&
+        !contentDuplicationReported &&
+        isContentDuplicated(session)
+      ) {
+        contentDuplicationReported = true;
+        new XWiki.widgets.Notification(
+          await translate("collaboration.contentDuplicated"),
+          "warning",
+        );
+      }
+    },
+    { immediate: true },
+  );
 }
 
 onUnmounted(() => {
@@ -531,6 +602,15 @@ defineExpose({
 </script>
 
 <style>
+.xwiki-blocknote-offline {
+  background: var(--alert-warning-bg, #fcf8e3);
+  border: var(--border-width, 1px) solid var(--alert-warning-border, #faebcc);
+  border-radius: var(--border-radius-base, 4px);
+  color: var(--alert-warning-text, #8a6d3b);
+  margin-bottom: calc(var(--grid-gutter-width, 30px) / 4);
+  padding: calc(var(--grid-gutter-width, 30px) / 4);
+}
+
 .xwiki-blocknote {
   .bn-container {
     --bn-font-family: unset;

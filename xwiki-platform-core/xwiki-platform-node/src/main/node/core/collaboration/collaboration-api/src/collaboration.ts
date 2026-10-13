@@ -38,6 +38,16 @@ export type Collaboration = {
   connectionStatus: Ref<ConnectionStatus>;
 
   /**
+   * Whether the shared document has been synchronized with the collaboration server at least once. It stays `false`
+   * while the server is unreachable, which is what tells "the session told us what it holds" apart from "we haven't
+   * heard from the session yet" -- the connection status can't, since it reports a connection as soon as the socket
+   * opens, before the synchronization completes.
+   *
+   * @since 18.9.0RC1
+   */
+  synced: Ref<boolean>;
+
+  /**
    * The list of users that have joined this collaboration. The list is reactive and will be updated when users join or
    * leave the collaboration.
    */

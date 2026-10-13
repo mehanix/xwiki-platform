@@ -96,7 +96,9 @@ export function createXWikiWebSocketProvider(
     );
   };
   // Send the client id to the server once on connect.
-  websocketProvider.once("status", ({ status }) => {
+  // Registered on every connection, not just the first one: a reconnection opens a new session server-side, which
+  // doesn't know our client id until we send it again, and so can't tell the other clients when we leave.
+  websocketProvider.on("status", ({ status }) => {
     if (status == "connected") {
       registerClient(websocketProvider);
     }

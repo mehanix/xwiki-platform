@@ -101,6 +101,43 @@ describe("XWikiBlockNoteProcessor", () => {
       expect(extractLinkId(link.href)).toBeUndefined();
       expect(link.href).toBe("/xwiki/bin/view/Space/Page");
     });
+
+    it("gives an id to every block, including the nested ones", () => {
+      const document = processor.load(
+        JSON.stringify([
+          { type: "paragraph", props: {}, content: [], children: [] },
+          {
+            type: "bulletListItem",
+            props: {},
+            content: [],
+            children: [{ type: "paragraph", props: {}, content: [] }],
+          },
+        ]),
+      );
+
+      expect(document.content[0].id).toBeTruthy();
+      expect(document.content[1].id).toBeTruthy();
+      expect(document.content[1].children[0].id).toBeTruthy();
+    });
+
+    it("generates the same ids every time the same document is loaded", () => {
+      // The realtime collaboration session is seeded with this content, and the seeds of two clients only merge into
+      // one if they are identical, down to the block ids. The metadata backed up here is mapped to those ids too, and
+      // is local to each client, so they have to agree on them for it to survive the round-trip.
+      const json = JSON.stringify(
+        documentWithLink({ xwikiParameters: { class: "myclass" } }),
+      );
+
+      const first = processor.load(json);
+      const second = new XWikiBlockNoteProcessor(
+        new DefaultBlockNoteIterator(),
+      ).load(json);
+
+      expect(second.content).toEqual(first.content);
+      expect(extractLinkId(firstLink(second.content).href)).toBe(
+        extractLinkId(firstLink(first.content).href),
+      );
+    });
   });
 
   describe("load then save round-trip", () => {
