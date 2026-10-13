@@ -19,6 +19,9 @@
  */
 package org.xwiki.yjs.websocket.internal.event;
 
+import java.util.EnumSet;
+import java.util.Set;
+
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
 import jakarta.inject.Singleton;
@@ -56,6 +59,14 @@ public class RoomListener extends AbstractEventListener
      * The unique identifier of the listener.
      */
     public static final String NAME = "org.xwiki.yjs.websocket.internal.event.RoomListener";
+
+    /**
+     * The message types through which a client contributes content to a room, and which therefore determine the room's
+     * script author. A client answers the SYNC_STEP_1 we send it with a SYNC_STEP_2, so that one carries content just
+     * like an incremental SYNC_UPDATE.
+     */
+    private static final Set<MessageType> CONTENT_MESSAGE_TYPES =
+        EnumSet.of(MessageType.SYNC_UPDATE, MessageType.SYNC_STEP_2);
 
     @Inject
     private Logger logger;
@@ -96,7 +107,7 @@ public class RoomListener extends AbstractEventListener
             // Re-broadcast the message to clients connected to the current cluster node.
             Room room = this.roomManager.get(event.getRoomReference(), true);
             room.onMessage(event.getClient(), data);
-        } else if (getMessageType(data) == MessageType.SYNC_UPDATE) {
+        } else if (CONTENT_MESSAGE_TYPES.contains(getMessageType(data))) {
             // Update the script author only when the content is updated (not when users join, leave or change their
             // awareness state like the cursor position). We do this only for local events because we need the XWiki
             // context to determine access rights for the message sender, and the XWiki context is initialized based

@@ -39,6 +39,8 @@ public class Message
 
     private final Long clientId;
 
+    private final boolean hasState;
+
     /**
      * Creates a new message by parsing the given byte array.
      *
@@ -51,6 +53,17 @@ public class Message
         CodedInputStream codedInputStream = CodedInputStream.newInstance(bytes);
         this.type = MessageType.from(codedInputStream);
         this.clientId = type == MessageType.JOIN ? codedInputStream.readUInt64() : null;
+        this.hasState = type == MessageType.SYNC_STEP_1 && readStateVectorSize(codedInputStream) > 0;
+    }
+
+    /**
+     * Reads the number of clients covered by the state vector of a {@link MessageType#SYNC_STEP_1} message, which is
+     * the first value written inside its (length prefixed) payload.
+     */
+    private static long readStateVectorSize(CodedInputStream codedInputStream) throws IOException
+    {
+        // A zero length payload means the client didn't send a state vector at all.
+        return codedInputStream.readUInt64() == 0 ? 0 : codedInputStream.readUInt64();
     }
 
     /**
@@ -75,6 +88,15 @@ public class Message
     public Long getClientId()
     {
         return this.clientId;
+    }
+
+    /**
+     * @return {@code true} if this is a {@link MessageType#SYNC_STEP_1} message whose state vector is not empty, which
+     *         means the client sending it already holds document updates that this room may be missing
+     */
+    public boolean hasState()
+    {
+        return this.hasState;
     }
 
     /**
@@ -147,6 +169,34 @@ public class Message
         // 0 clients/structs.
         codedOutputStream.writeUInt64NoTag(0);
         // 0 deletes.
+        codedOutputStream.writeUInt64NoTag(0);
+        codedOutputStream.flush();
+        return output.toByteArray();
+    }
+
+    /**
+     * An empty SYNC_STEP_1 message looks like this: [0, 0, 1, 0]. It is laid out like
+     * {@link #emptySyncStep2()}, except that its payload is a state vector covering 0 clients rather than an update
+     * with 0 structs and 0 deletes. It tells the client "I have nothing, send me everything you have".
+     * <p>
+     * We can't do better than an empty state vector because we don't maintain a Yjs document server-side: we only
+     * record the update messages we see, as opaque bytes, without being able to tell what they contain. The client
+     * discards whatever it sends us back that we already had, so the cost is bandwidth, not correctness.
+     *
+     * @return a SYNC_STEP_1 message carrying an empty state vector
+     * @throws IOException if an error occurs while building the message
+     */
+    public static byte[] emptySyncStep1() throws IOException
+    {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        CodedOutputStream codedOutputStream = CodedOutputStream.newInstance(output);
+        // This is a synchronization message.
+        codedOutputStream.writeUInt64NoTag(0);
+        // This is step 1 of the synchronization process.
+        codedOutputStream.writeUInt64NoTag(0);
+        // The length of the state vector payload is 1 byte.
+        codedOutputStream.writeUInt64NoTag(1);
+        // 0 clients, i.e. we know nothing about the document.
         codedOutputStream.writeUInt64NoTag(0);
         codedOutputStream.flush();
         return output.toByteArray();

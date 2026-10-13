@@ -57,6 +57,8 @@ import static org.mockito.Mockito.when;
 import static org.xwiki.yjs.websocket.internal.MessageTestUtils.createAwarenessMessage;
 import static org.xwiki.yjs.websocket.internal.MessageTestUtils.createIdMessage;
 import static org.xwiki.yjs.websocket.internal.MessageTestUtils.createSyncStep1Message;
+import static org.xwiki.yjs.websocket.internal.MessageTestUtils.createSyncStep1MessageWithState;
+import static org.xwiki.yjs.websocket.internal.MessageTestUtils.createSyncStep2Message;
 import static org.xwiki.yjs.websocket.internal.MessageTestUtils.createSyncUpdateMessage;
 
 /**
@@ -315,5 +317,113 @@ class DefaultRoomManagerTest
         this.roomManager.join(bobSession, documentReference);
         this.roomManager.leave(bobSession);
         verify(this.pingPongManager, times(3)).stopPinging(bobSession);
+    }
+
+    @Test
+    void syncWithClientThatHasLocalState() throws Exception
+    {
+        when(this.configuration.getMaxHistorySize()).thenReturn(1000L);
+
+        UserReference aliceReference = mock(UserReference.class, "alice-reference");
+        Session aliceSession = mock(Session.class, "alice-session");
+        when(aliceSession.getId()).thenReturn("alice-session");
+        Basic aliceBasicRemote = mock(Basic.class, "alice-basic-remote");
+        when(aliceSession.getBasicRemote()).thenReturn(aliceBasicRemote);
+
+        UserReference bobReference = mock(UserReference.class, "bob-reference");
+        Session bobSession = mock(Session.class, "bob-session");
+        when(bobSession.getId()).thenReturn("bob-session");
+        Basic bobBasicRemote = mock(Basic.class, "bob-basic-remote");
+        when(bobSession.getBasicRemote()).thenReturn(bobBasicRemote);
+
+        UserReference carolReference = mock(UserReference.class, "carol-reference");
+        Session carolSession = mock(Session.class, "carol-session");
+        when(carolSession.getId()).thenReturn("carol-session");
+        Basic carolBasicRemote = mock(Basic.class, "carol-basic-remote");
+        when(carolSession.getBasicRemote()).thenReturn(carolBasicRemote);
+
+        //
+        // Alice joins with an empty Yjs document, so we have nothing to ask her for.
+        //
+
+        when(this.currentUserReferenceResolver.resolve(CurrentUserReference.INSTANCE)).thenReturn(aliceReference);
+        this.roomManager.join(aliceSession, documentReference);
+        verify(aliceSession).addMessageHandler(this.messageHandlerCaptor.capture());
+        AbstractPartialBinaryMessageHandler aliceMessageHandler = this.messageHandlerCaptor.getValue();
+        aliceMessageHandler.onMessage(createIdMessage(13L));
+
+        aliceMessageHandler.onMessage(createSyncStep1Message());
+        verify(aliceBasicRemote).sendBinary(ByteBuffer.wrap(Message.emptySyncStep2()));
+        verify(aliceBasicRemote, never()).sendBinary(ByteBuffer.wrap(Message.emptySyncStep1()));
+
+        byte[] aliceUpdate = createSyncUpdateMessage("from Alice");
+        aliceMessageHandler.onMessage(aliceUpdate);
+
+        //
+        // Bob joins with a Yjs document he already edited, e.g. while he couldn't reach us, so we ask him for it.
+        //
+
+        when(this.currentUserReferenceResolver.resolve(CurrentUserReference.INSTANCE)).thenReturn(bobReference);
+        this.roomManager.join(bobSession, documentReference);
+        verify(bobSession).addMessageHandler(this.messageHandlerCaptor.capture());
+        AbstractPartialBinaryMessageHandler bobMessageHandler = this.messageHandlerCaptor.getValue();
+        bobMessageHandler.onMessage(createIdMessage(27L));
+
+        bobMessageHandler.onMessage(createSyncStep1MessageWithState());
+        // We first replay what we have and end the synchronization process, and only then ask for his state.
+        verify(bobBasicRemote).sendBinary(ByteBuffer.wrap(aliceUpdate));
+        verify(bobBasicRemote).sendBinary(ByteBuffer.wrap(Message.emptySyncStep2()));
+        verify(bobBasicRemote).sendBinary(ByteBuffer.wrap(Message.emptySyncStep1()));
+
+        //
+        // Bob answers with the updates he holds, which we broadcast and record.
+        //
+
+        byte[] bobState = createSyncStep2Message("from Bob");
+        bobMessageHandler.onMessage(bobState);
+        verify(aliceBasicRemote).sendBinary(ByteBuffer.wrap(bobState));
+        verify(bobBasicRemote, never()).sendBinary(ByteBuffer.wrap(bobState));
+
+        //
+        // Carol joins and gets both Alice's update and the state Bob sent us.
+        //
+
+        when(this.currentUserReferenceResolver.resolve(CurrentUserReference.INSTANCE)).thenReturn(carolReference);
+        this.roomManager.join(carolSession, documentReference);
+        verify(carolSession).addMessageHandler(this.messageHandlerCaptor.capture());
+        AbstractPartialBinaryMessageHandler carolMessageHandler = this.messageHandlerCaptor.getValue();
+        carolMessageHandler.onMessage(createIdMessage(42L));
+
+        carolMessageHandler.onMessage(createSyncStep1Message());
+        verify(carolBasicRemote).sendBinary(ByteBuffer.wrap(aliceUpdate));
+        verify(carolBasicRemote).sendBinary(ByteBuffer.wrap(bobState));
+        verify(carolBasicRemote).sendBinary(ByteBuffer.wrap(Message.emptySyncStep2()));
+    }
+
+    @Test
+    void syncFailsToRequestClientState() throws Exception
+    {
+        when(this.configuration.getMaxHistorySize()).thenReturn(1000L);
+
+        UserReference aliceReference = mock(UserReference.class, "alice-reference");
+        Session aliceSession = mock(Session.class, "alice-session");
+        when(aliceSession.getId()).thenReturn("alice-session");
+        Basic aliceBasicRemote = mock(Basic.class, "alice-basic-remote");
+        when(aliceSession.getBasicRemote()).thenReturn(aliceBasicRemote);
+
+        when(this.currentUserReferenceResolver.resolve(CurrentUserReference.INSTANCE)).thenReturn(aliceReference);
+        this.roomManager.join(aliceSession, documentReference);
+        verify(aliceSession).addMessageHandler(this.messageHandlerCaptor.capture());
+        AbstractPartialBinaryMessageHandler aliceMessageHandler = this.messageHandlerCaptor.getValue();
+        aliceMessageHandler.onMessage(createIdMessage(13L));
+
+        doThrow(new IOException("Send failed")).when(aliceBasicRemote)
+            .sendBinary(ByteBuffer.wrap(Message.emptySyncStep1()));
+        aliceMessageHandler.onMessage(createSyncStep1MessageWithState());
+
+        verify(this.pingPongManager).stopPinging(aliceSession);
+        assertEquals(1, this.logCapture.size());
+        assertEquals("Failed to request the state of client [Client{id=13, userReference=alice-reference}]."
+            + " Cause: [IOException: Send failed]", this.logCapture.getMessage(0));
     }
 }

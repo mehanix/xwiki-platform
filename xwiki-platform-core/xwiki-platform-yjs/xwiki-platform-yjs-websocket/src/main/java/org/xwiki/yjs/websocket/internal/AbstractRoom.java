@@ -109,19 +109,13 @@ public abstract class AbstractRoom implements Room
                         clientsToDisconnect.add(fromClient);
                         break;
                     case SYNC_STEP_1:
-                        if (!sendStoredUpdates(fromClient)) {
-                            // Failed to send the stored updates to the client.
+                        if (!sync(fromClient, message)) {
+                            // Failed to synchronize the client.
                             clientsToDisconnect.add(fromClient);
                         }
                         break;
-                    case SYNC_UPDATE:
-                        // Record the update message in order to be able to replay it later to clients that request
-                        // synchronization.
-                        this.storedUpdates.add(data.clone());
-                        this.historySize += data.length;
-                        if (this.historySize > this.configuration.getMaxHistorySize()) {
-                            LOGGER.warn("Room [{}] has reached the maximum history size of [{}] bytes. Closing.",
-                                this.documentReference, this.configuration.getMaxHistorySize());
+                    case SYNC_STEP_2, SYNC_UPDATE:
+                        if (!recordUpdate(data)) {
                             // Disconnect all clients.
                             clientsToDisconnect.addAll(this.clients);
                         }
@@ -150,6 +144,40 @@ public abstract class AbstractRoom implements Room
     }
 
     /**
+     * Replays to the given client the updates we have and then, if the client itself holds updates, asks for them, so
+     * that what it edited while it couldn't reach us makes it into the room.
+     *
+     * @param toClient the client to synchronize
+     * @param message the synchronization request sent by the client
+     * @return {@code true} if the client was synchronized successfully, {@code false} otherwise
+     */
+    private boolean sync(Client toClient, Message message)
+    {
+        return sendStoredUpdates(toClient) && (!message.hasState() || requestClientState(toClient));
+    }
+
+    /**
+     * Records an update message in order to be able to replay it later to the clients that request synchronization. A
+     * SYNC_STEP_2 is how a client answers the SYNC_STEP_1 we send it, so it carries updates that have to be recorded
+     * just like an incremental SYNC_UPDATE.
+     *
+     * @param data the update message to record
+     * @return {@code false} if the room has reached its maximum history size and has to be closed
+     */
+    private boolean recordUpdate(byte[] data)
+    {
+        this.storedUpdates.add(data.clone());
+        this.historySize += data.length;
+        if (this.historySize > this.configuration.getMaxHistorySize()) {
+            LOGGER.warn("Room [{}] has reached the maximum history size of [{}] bytes. Closing.",
+                this.documentReference, this.configuration.getMaxHistorySize());
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * Sends all stored synchronization updates to the given client, followed by an empty
      * {@link MessageType#SYNC_STEP_2} message to indicate the end of the synchronization process.
      *
@@ -174,6 +202,25 @@ public abstract class AbstractRoom implements Room
         } catch (IOException e) {
             LOGGER.warn("Failed to send end of synchronization message to client [{}]. Cause: [{}]", toClient,
                 getRootCauseMessage(e));
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Asks the given client to send us the document updates it holds, by sending it a {@link MessageType#SYNC_STEP_1}
+     * message with an empty state vector.
+     *
+     * @param toClient the client to ask for its state
+     * @return {@code true} if the request was sent successfully, {@code false} otherwise
+     */
+    private boolean requestClientState(Client toClient)
+    {
+        try {
+            sendMessage(toClient, Message.emptySyncStep1());
+        } catch (IOException e) {
+            LOGGER.warn("Failed to request the state of client [{}]. Cause: [{}]", toClient, getRootCauseMessage(e));
             return false;
         }
 

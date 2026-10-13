@@ -41,6 +41,7 @@ import org.xwiki.yjs.websocket.internal.ScriptAuthorChange;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -116,6 +117,15 @@ class RoomListenerTest
         byte[] updateMessage = MessageTestUtils.createSyncUpdateMessage("two");
         this.roomListener.onEvent(this.roomMessageEvent, updateMessage, null);
         verify(this.roomScriptAuthorTracker).maybeSetScriptAuthor(roomReference, alice);
+
+        // Asking for synchronization doesn't contribute any content.
+        this.roomListener.onEvent(this.roomMessageEvent, MessageTestUtils.createSyncStep1Message(), null);
+        verify(this.roomScriptAuthorTracker).maybeSetScriptAuthor(roomReference, alice);
+
+        // Answering the sync step 1 we send to a client that has local state does contribute content.
+        byte[] syncStep2Message = MessageTestUtils.createSyncStep2Message("three");
+        this.roomListener.onEvent(this.roomMessageEvent, syncStep2Message, null);
+        verify(this.roomScriptAuthorTracker, times(2)).maybeSetScriptAuthor(roomReference, alice);
     }
 
     @Test

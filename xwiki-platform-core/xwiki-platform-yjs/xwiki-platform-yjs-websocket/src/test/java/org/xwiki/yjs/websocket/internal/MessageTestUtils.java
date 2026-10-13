@@ -49,12 +49,36 @@ public class MessageTestUtils
     }
 
     /**
-     * @return the message used to start the synchronization of a Yjs document
+     * @return the message used by a client with no local state to start the synchronization of a Yjs document
      * @throws Exception if an error occurs while creating the message
      */
     public static byte[] createSyncStep1Message() throws Exception
     {
-        return createSyncMessage(0, "");
+        // A state vector covering 0 clients.
+        return createSyncMessage(0, new byte[] {0});
+    }
+
+    /**
+     * @return the message used by a client that already holds document updates to start the synchronization of a Yjs
+     *         document
+     * @throws Exception if an error occurs while creating the message
+     */
+    public static byte[] createSyncStep1MessageWithState() throws Exception
+    {
+        // A state vector covering 1 client: client id 13, clock 7.
+        return createSyncMessage(0, new byte[] {1, 13, 7});
+    }
+
+    /**
+     * Creates the message a client sends to answer a sync step 1 message, carrying the updates it holds.
+     *
+     * @param content the content of the message
+     * @return the message used by a client to send the updates it holds
+     * @throws Exception if an error occurs while creating the message
+     */
+    public static byte[] createSyncStep2Message(String content) throws Exception
+    {
+        return createSyncMessage(1, content);
     }
 
     /**
@@ -71,11 +95,16 @@ public class MessageTestUtils
 
     private static byte[] createSyncMessage(long syncType, String content) throws Exception
     {
+        return createSyncMessage(syncType, content.getBytes());
+    }
+
+    private static byte[] createSyncMessage(long syncType, byte[] payload) throws Exception
+    {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         CodedOutputStream codedOutputStream = CodedOutputStream.newInstance(output);
         codedOutputStream.writeUInt64NoTag(0);
         codedOutputStream.writeUInt64NoTag(syncType);
-        codedOutputStream.writeByteArrayNoTag(content.getBytes());
+        codedOutputStream.writeByteArrayNoTag(payload);
         codedOutputStream.flush();
         return output.toByteArray();
     }
