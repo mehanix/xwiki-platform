@@ -17,12 +17,14 @@
  * Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
  * 02110-1301 USA, or see the FSF site: http://www.fsf.org.
  */
+import { takeOverFileTransfers } from "./insertFilesInline";
 import { injectLinkId } from "./linkId";
 import { trackPaste } from "../attachments/pasteTracker";
 import { withUniqueName } from "../attachments/uniqueFileName";
 import { EntityType } from "@xwiki/platform-model-api";
 import { uuidv4 } from "lib0/random";
 import type { BlockNoteDocument } from "./BlockNoteProcessor";
+import type { InlineLink, InsertInlineContent } from "./insertFilesInline";
 import type { StorageProvider } from "@xwiki/platform-backend-api";
 import type { ModelReferenceParserProvider } from "@xwiki/platform-model-reference-api";
 import type { RemoteURLSerializerProvider } from "@xwiki/platform-model-remote-url-api";
@@ -40,6 +42,9 @@ type FileUploaderDependencies = {
   // Functions because neither is known yet when the editor is created.
   getDocumentReference: () => string;
   getBlockNoteDocument: () => BlockNoteDocument | undefined;
+
+  // Puts the links of the files taken over from BlockNote in the editor.
+  insertInlineContent: InsertInlineContent;
 
   // Whether the files are uploaded to the temporary store of the user session, from where the save request attaches
   // them to the document, rather than being attached right away.
@@ -64,6 +69,12 @@ type FileUploader = {
 };
 
 const EMPTY_PARAGRAPH: UploadResult = { type: "paragraph", content: [] };
+
+// The browser names a pasted file after its media type, so a second paste would overwrite the first. A file with no
+// name at all gets one too, rather than being attached as "".
+function toAttach(file: File, paste: boolean): File {
+  return paste || !file.name ? withUniqueName(file) : file;
+}
 
 function attachmentReference(
   reference: string,
@@ -98,6 +109,7 @@ function createFileUploader(
     eventTarget,
     getDocumentReference,
     getBlockNoteDocument,
+    insertInlineContent,
     isTemporaryUpload,
     registerTemporaryAttachment,
     notifyUploadFailed,
@@ -106,8 +118,21 @@ function createFileUploader(
   const { storageProvider, modelReferenceParser, remoteURLSerializer } =
     getComponents(container);
 
-  // Pasted files are renamed, so we need to know how the file reached the editor.
-  const pasteTracker = trackPaste(eventTarget);
+  // Pasted files are renamed, so we need to know how the file reached the editor. A transfer of files that are not
+  // images is taken over, because BlockNote would give each of them a block of its own and the link would end up
+  // alone in a paragraph. One mixing images with other files is left to BlockNote rather than split over two paths.
+  const pasteTracker = trackPaste(
+    eventTarget,
+    takeOverFileTransfers(insertInlineContent, async (file, paste) => {
+      const toUpload = toAttach(file, paste);
+      try {
+        return linkTo(await attach(toUpload), toUpload.name);
+      } catch (error) {
+        notifyUploadFailed(toUpload.name, error);
+        return undefined;
+      }
+    }),
+  );
 
   async function attach(file: File): Promise<string> {
     const temporary = isTemporaryUpload();
@@ -152,10 +177,10 @@ function createFileUploader(
     return { props: { url: getDownloadURL(reference), name: "" } };
   }
 
-  // The file, video and audio blocks are saved as macro calls, but those macros don't exist yet, so such a file
-  // becomes a link to the attachment instead. The link metadata hangs off a synthetic id carried in the href,
-  // because links have no id of their own.
-  function toAttachmentLink(reference: string, label: string): UploadResult {
+  // The file, video and audio blocks are saved as macro calls, but those macros don't exist yet, so a file that
+  // isn't an image becomes a link to the attachment instead, as in the CKEditor integration. The link metadata hangs
+  // off a synthetic id carried in the href, because links have no id of their own.
+  function linkTo(reference: string, label: string): InlineLink {
     const linkId = uuidv4();
     const metadata = getBlockNoteDocument()!.getMetadata(linkId, true)!;
     metadata.xwikiReference = attachmentReference(reference, true);
@@ -163,25 +188,22 @@ function createFileUploader(
     // the next time the page is edited.
     metadata.xwikiGeneratedLabel = label;
     return {
-      type: "paragraph",
-      content: [
-        {
-          type: "link",
-          href: injectLinkId(getDownloadURL(reference), linkId),
-          content: label,
-        },
-      ],
+      type: "link",
+      href: injectLinkId(getDownloadURL(reference), linkId),
+      content: label,
     };
   }
 
   async function upload(file: File, blockId?: string): Promise<UploadResult> {
-    const toUpload =
-      pasteTracker.isPaste() || !file.name ? withUniqueName(file) : file;
+    const toUpload = toAttach(file, pasteTracker.isPaste());
     try {
       const reference = await attach(toUpload);
-      return file.type.startsWith("image/")
-        ? toImageBlock(reference, blockId)
-        : toAttachmentLink(reference, toUpload.name);
+      if (file.type.startsWith("image/")) {
+        return toImageBlock(reference, blockId);
+      }
+      // Only the files of a transfer that also carries an image get here, so their link does end up alone in a
+      // paragraph: this replaces the block BlockNote inserted for them.
+      return { type: "paragraph", content: [linkTo(reference, toUpload.name)] };
     } catch (error) {
       // BlockNote doesn't catch our errors and updates the inserted block as soon as we return, so rejecting would
       // leave an unhandled rejection and an orphan block.
